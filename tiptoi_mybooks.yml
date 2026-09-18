@@ -1,0 +1,11 @@
+# mine:
+#  - isbn: 978-3-473-32909-0 # Buchtitel
+#  - isbn: 9783473329100 # Buchtitel
+#  - id: 923 # Buchtitel
+# ignore:
+#  - isbn: 978-3-473-32911-0 # Buchtitel
+#  - isbn: 9783473329120 # Buchtitel
+#  - id: 924 # Buchtitel
+ignore:
+  - id: 133 # Tiptoi Starterset Zubehör
+  - id: 970 # Tiptoi Starterset Zubehör / Schnellstart
