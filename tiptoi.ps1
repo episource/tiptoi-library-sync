@@ -1,7 +1,13 @@
-﻿param(
+﻿[CmdletBinding(PositionalBinding = $false)]
+param(
     [switch]$excludeListed,
     [switch]$download,
     [switch]$fix,
+
+    # Documented PowerShell spelling is -help.
+    # The conventional --help spelling is accepted as a hidden compatibility alias
+    # through ModeArguments below.
+    [switch]$help,
 
     [ValidateRange(0, 99)]
     [int]$age = 0,
@@ -22,9 +28,158 @@
     #   -cleanup
     #   -cleanup All
     [Parameter(ValueFromRemainingArguments = $true)]
-    [ValidateSet("Ask", "All", "Ignored")]
+    [ValidateSet("Ask", "All", "Ignored", "--help")]
     [string[]]$ModeArguments = @()
 )
+
+# ============================================================================
+# Command-line help
+#
+# Keep this before all mode parsing, configuration loading, network access,
+# and local file scanning so --help has no side effects.
+# ============================================================================
+
+$ShowHelp =
+    $help -or
+    ($ModeArguments -contains "--help")
+
+if ($ShowHelp) {
+    @'
+tiptoi.ps1 - Ravensburger tiptoi GME-Dateien mithilfe eines Bibliotheks-RSS-Feeds verwalten
+
+VERWENDUNG
+  .\tiptoi.ps1
+  .\tiptoi.ps1 -help
+  .\tiptoi.ps1 -download [Ask|All]
+  .\tiptoi.ps1 -cleanup [Ignored|All]
+  .\tiptoi.ps1 -fix
+  .\tiptoi.ps1 [-age 0..99] [-sort Id|Size] [-excludeListed]
+
+STANDARDVERHALTEN
+  Wird das Script ohne Parameter gestartet, werden keine Dateien
+  heruntergeladen, gelöscht oder ersetzt. Das Script lädt den konfigurierten
+  Ravensburger-Katalog und den RSS-Feed der Bibliothek, durchsucht die lokalen
+  .gme-Dateien auf dem tiptoi-Datenträger, prüft Duplikate und Dateigrößen,
+  ermittelt den Verfügbarkeitsstatus und gibt den lokalen Bestand als Tabelle
+  aus.
+
+  Die Standardauflistung wird numerisch nach der GME Product-ID sortiert.
+
+  Standardwerte:
+    Download-Modus : Ask
+    Cleanup-Modus  : Ignored
+    Sortierung     : Id
+    Altersfilter   : deaktiviert, sofern -age nicht ausdrücklich angegeben wird
+
+PARAMETER
+  -help
+      Diese Hilfe anzeigen und das Script sofort beenden.
+      Es werden keine Netzwerk- oder Dateiprüfungen ausgeführt.
+
+  -download [Ask|All]
+      Fehlende Bibliothekstitel herunterladen.
+
+      Ask ist der Standard, wenn -download ohne Wert angegeben wird.
+      Jeder Download-Kandidat wird mit Titel, ISBN, GME Product-ID,
+      Altersempfehlung und Dateigröße angezeigt und muss einzeln bestätigt
+      werden.
+
+      All überspringt die Einzelabfrage und wählt alle geeigneten
+      Download-Kandidaten aus.
+
+      Beispiele:
+        .\tiptoi.ps1 -download
+        .\tiptoi.ps1 -download Ask
+        .\tiptoi.ps1 -download All
+
+  -cleanup [Ignored|All]
+      Lokale Dateien interaktiv zum Löschen anbieten, sortiert nach
+      absteigender Dateigröße.
+
+      Ignored ist der Standard, wenn -cleanup ohne Wert angegeben wird.
+      Es werden nur Dateien mit dem Verfügbarkeitsstatus "Ignoriert" angeboten.
+
+      All bietet Dateien mit dem Status "Ignoriert" oder "Unbekannt" an.
+
+      Beispiele:
+        .\tiptoi.ps1 -cleanup
+        .\tiptoi.ps1 -cleanup Ignored
+        .\tiptoi.ps1 -cleanup All
+
+  -age <0..99>
+      Download-Kandidaten anhand der Ravensburger-Metadaten ageFrom / ageTo
+      auf das angegebene Alter beschränken.
+
+      Ohne -age wird keine Altersfilterung angewendet.
+
+  -fix
+      Den interaktiven Reparaturablauf für Dateiduplikate und Dateien starten,
+      deren lokale Größe von der Ravensburger-Serverversion abweicht.
+
+  -sort <Id|Size>
+      Sortierung der normalen Auflistung festlegen.
+
+      Id   : numerische GME Product-ID aufsteigend (Standard)
+      Size : Dateigröße absteigend
+
+  -excludeListed
+      In der normalen Auflistung nur Dateien mit dem Verfügbarkeitsstatus
+      "Unbekannt" anzeigen.
+
+VERFÜGBARKEITSSTATUS
+  Ignoriert
+      Unter "ignore" in tiptoi_mybooks.yml aufgeführt. Dieser Status hat die
+      höchste Priorität. Ignorierte Titel werden nicht heruntergeladen und
+      können zum Löschen angeboten werden.
+
+  Besitz
+      Unter "mine" in tiptoi_mybooks.yml aufgeführt.
+
+  Buecherei
+      Aus dem konfigurierten RSS-Feed der Bibliothek aufgelöst.
+
+  Unbekannt
+      Keinem der oben genannten Fälle zugeordnet.
+
+TIPTOI_MYBOOKS.YML
+  Optionale Datei im selben Verzeichnis wie tiptoi.ps1 auf dem tiptoi-Datenträger.
+
+  Beispiel:
+
+    mine:
+     - isbn: 978-3-473-32909-0 # Optionaler Kommentar
+     - isbn: 9783473329100
+     - id: 923
+
+    ignore:
+     - isbn: 978-3-473-32911-0 # Optionaler Kommentar
+     - isbn: 9783473329120
+     - id: 924
+
+  Einträge können entweder eine ISBN oder eine interne GME Product-ID
+  verwenden. ISBN-Trennzeichen sind optional. Der alte Schlüssel "my_books"
+  wird als Alias für "mine" akzeptiert; "ingore" wird aus Kompatibilitätsgründen
+  als Alias für "ignore" akzeptiert.
+
+HINWEISE
+  Das Script sollte direkt auf dem tiptoi-Datenträger liegen, zusammen mit den
+  .gme-Dateien und der optionalen Datei tiptoi_mybooks.yml.
+
+  Die RSS-URL der Bibliothek muss in tiptoi.ps1 für die eigene Bibliothek
+  konfiguriert werden.
+
+  Dieses Script wurde vollständig "vibe coded" und kommt ohne jegliche
+  Gewährleistung. Erstellen Sie Sicherungskopien und verwenden Sie es auf
+  eigenes Risiko.
+'@ | Write-Host
+
+    exit 0
+}
+
+# Show the help hint for every normal invocation.
+Write-Host "Führen Sie .\tiptoi.ps1 -help aus, um Informationen zur Verwendung und zu den verfügbaren Optionen zu erhalten."
+Write-Host ""
+
 
 $DownloadEnabled = [bool]$download
 $CleanupEnabled  = [bool]$cleanup
@@ -1824,7 +1979,7 @@ function Get-RemoteFileSizeBytes {
         $request = [System.Net.HttpWebRequest]::Create($Url)
         $request.Method = "HEAD"
         $request.AllowAutoRedirect = $true
-        $request.UserAgent = "PowerShell-TiptoiLibrarySync/16.0"
+        $request.UserAgent = "PowerShell-TiptoiLibrarySync/20.0"
         $request.Timeout = 30000
         $request.ReadWriteTimeout = 30000
 
@@ -1851,7 +2006,7 @@ function Get-RemoteFileSizeBytes {
         $request = [System.Net.HttpWebRequest]::Create($Url)
         $request.Method = "GET"
         $request.AllowAutoRedirect = $true
-        $request.UserAgent = "PowerShell-TiptoiLibrarySync/16.0"
+        $request.UserAgent = "PowerShell-TiptoiLibrarySync/20.0"
         $request.Timeout = 30000
         $request.ReadWriteTimeout = 30000
         $request.AddRange(0, 0)
