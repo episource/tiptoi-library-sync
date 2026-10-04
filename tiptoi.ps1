@@ -101,6 +101,11 @@ PARAMETER
 
       All bietet Dateien mit dem Status "Ignoriert" oder "Unbekannt" an.
 
+      Nach einer bestätigten Cleanup-Löschung wird die GME Product-ID unter
+      "ignore" in tiptoi_mybooks.yml gespeichert. Bereits ignorierte IDs
+      werden nicht doppelt eingetragen. Der Ravensburger-Titel wird als
+      Kommentar ergänzt.
+
       Beispiele:
         .\tiptoi.ps1 -cleanup
         .\tiptoi.ps1 -cleanup Ignored
@@ -1516,6 +1521,358 @@ function Get-BookListsConfiguration {
 
 
 # ============================================================================
+# Add a GME Product-ID to tiptoi_mybooks.yml:ignore
+#
+# Existing file bytes are preserved exactly. New bytes are only inserted at
+# the end of the existing ignore section or appended as a new ignore section.
+# If the file does not exist, it is created with the documented example header.
+# ============================================================================
+
+function Add-IgnoredGameIdToYaml {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ProductId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Title,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$IgnoredGameIds
+    )
+
+    $id =
+        $ProductId -replace '\D', ''
+
+    if ([string]::IsNullOrWhiteSpace($id)) {
+        Write-Warning (
+            "GME Product-ID konnte nicht in tiptoi_mybooks.yml eingetragen werden."
+        )
+
+        return $false
+    }
+
+    # A Product-ID that already resolves to ignore must not be added again,
+    # even when the existing ignore entry uses an ISBN rather than id:.
+    if ($IgnoredGameIds.ContainsKey([string]$id)) {
+        return $false
+    }
+
+    $commentTitle =
+        [string]$Title
+
+    $commentTitle =
+        $commentTitle -replace '[\r\n]+', ' '
+
+    $commentTitle =
+        $commentTitle -replace '[\x00-\x08\x0B\x0C\x0E-\x1F]+', ' '
+
+    $commentTitle =
+        $commentTitle.Trim()
+
+    if ([string]::IsNullOrWhiteSpace($commentTitle)) {
+        $commentTitle =
+            "Product-ID $id"
+    }
+
+    $newEntry =
+        "  - id: {0} # {1}" -f
+        $id,
+        $commentTitle
+
+    # When the file does not exist, create it with the requested example
+    # header and immediately add the first real ignore entry.
+    if (-not (Test-Path -LiteralPath $Path)) {
+        $header = @(
+            "# mine:",
+            "#  - isbn: 978-3-473-32909-0 # Buchtitel",
+            "#  - isbn: 9783473329100 # Buchtitel",
+            "#  - id: 923 # Buchtitel",
+            "# ignore:",
+            "#  - isbn: 978-3-473-32911-0 # Buchtitel",
+            "#  - isbn: 9783473329120 # Buchtitel",
+            "#  - id: 924 # Buchtitel",
+            "",
+            "ignore:",
+            $newEntry,
+            ""
+        ) -join "`r`n"
+
+        try {
+            # A UTF-8 BOM keeps non-ASCII title comments readable in
+            # Windows PowerShell 5.1 as well.
+            $utf8Bom =
+                New-Object System.Text.UTF8Encoding -ArgumentList $true
+
+            [System.IO.File]::WriteAllText(
+                $Path,
+                $header,
+                $utf8Bom
+            )
+
+            $IgnoredGameIds[[string]$id] = $true
+
+            Write-Host (
+                "Zu tiptoi_mybooks.yml:ignore hinzugefuegt: id {0} # {1}" -f
+                $id,
+                $commentTitle
+            )
+
+            return $true
+        }
+        catch {
+            Write-Warning (
+                "tiptoi_mybooks.yml konnte nicht erstellt werden: " +
+                $_.Exception.Message
+            )
+
+            return $false
+        }
+    }
+
+    try {
+        $bytes =
+            [System.IO.File]::ReadAllBytes($Path)
+
+        $encoding = $null
+        $preambleLength = 0
+
+        if (
+            $bytes.Length -ge 3 -and
+            $bytes[0] -eq 0xEF -and
+            $bytes[1] -eq 0xBB -and
+            $bytes[2] -eq 0xBF
+        ) {
+            $encoding =
+                New-Object System.Text.UTF8Encoding -ArgumentList $false, $true
+
+            $preambleLength = 3
+        }
+        elseif (
+            $bytes.Length -ge 2 -and
+            $bytes[0] -eq 0xFF -and
+            $bytes[1] -eq 0xFE
+        ) {
+            $encoding =
+                New-Object System.Text.UnicodeEncoding -ArgumentList $false, $false, $true
+
+            $preambleLength = 2
+        }
+        elseif (
+            $bytes.Length -ge 2 -and
+            $bytes[0] -eq 0xFE -and
+            $bytes[1] -eq 0xFF
+        ) {
+            $encoding =
+                New-Object System.Text.UnicodeEncoding -ArgumentList $true, $false, $true
+
+            $preambleLength = 2
+        }
+        else {
+            # Prefer BOM-less UTF-8 when it is valid. Otherwise use the
+            # current Windows ANSI code page. Only newly inserted bytes are
+            # encoded; all original bytes are copied unchanged.
+            try {
+                $strictUtf8 =
+                    New-Object System.Text.UTF8Encoding -ArgumentList $false, $true
+
+                $null =
+                    $strictUtf8.GetString($bytes)
+
+                $encoding =
+                    $strictUtf8
+            }
+            catch {
+                $encoding =
+                    [System.Text.Encoding]::Default
+            }
+        }
+
+        $textLength =
+            $bytes.Length - $preambleLength
+
+        if ($textLength -gt 0) {
+            $yamlText =
+                $encoding.GetString(
+                    $bytes,
+                    $preambleLength,
+                    $textLength
+                )
+        }
+        else {
+            $yamlText = ""
+        }
+
+        # Keep the existing newline convention for newly inserted lines.
+        if ($yamlText -match "`r`n") {
+            $newline = "`r`n"
+        }
+        elseif ($yamlText -match "`n") {
+            $newline = "`n"
+        }
+        elseif ($yamlText -match "`r") {
+            $newline = "`r"
+        }
+        else {
+            $newline = "`r`n"
+        }
+
+        $ignoreMatch =
+            [regex]::Match(
+                $yamlText,
+                '(?im)^[ \t]*(?:ignore|ingore)[ \t]*:[^\r\n]*(?:\r\n|\n|\r|$)'
+            )
+
+        if ($ignoreMatch.Success) {
+            $sectionContentStart =
+                $ignoreMatch.Index + $ignoreMatch.Length
+
+            $remainingText =
+                $yamlText.Substring($sectionContentStart)
+
+            # Match the next non-indented YAML root key. The new id line is
+            # inserted immediately before it. If none exists, append to EOF.
+            $nextRoot =
+                [regex]::Match(
+                    $remainingText,
+                    '(?m)^[^ \t\r\n#][^:\r\n]*:[^\r\n]*(?:\r\n|\n|\r|$)'
+                )
+
+            if ($nextRoot.Success) {
+                $insertCharIndex =
+                    $sectionContentStart + $nextRoot.Index
+
+                $insertText =
+                    $newEntry + $newline
+            }
+            else {
+                $insertCharIndex =
+                    $yamlText.Length
+
+                if (
+                    $yamlText.Length -gt 0 -and
+                    -not (
+                        $yamlText.EndsWith("`r") -or
+                        $yamlText.EndsWith("`n")
+                    )
+                ) {
+                    $insertText =
+                        $newline + $newEntry + $newline
+                }
+                else {
+                    $insertText =
+                        $newEntry + $newline
+                }
+            }
+        }
+        else {
+            # No ignore section exists yet. Append one without changing any
+            # existing content.
+            $insertCharIndex =
+                $yamlText.Length
+
+            if ($yamlText.Length -eq 0) {
+                $insertText =
+                    "ignore:" + $newline +
+                    $newEntry + $newline
+            }
+            elseif (
+                $yamlText.EndsWith("`r") -or
+                $yamlText.EndsWith("`n")
+            ) {
+                $insertText =
+                    "ignore:" + $newline +
+                    $newEntry + $newline
+            }
+            else {
+                $insertText =
+                    $newline +
+                    "ignore:" + $newline +
+                    $newEntry + $newline
+            }
+        }
+
+        $prefixByteCount =
+            $encoding.GetByteCount(
+                $yamlText.Substring(
+                    0,
+                    $insertCharIndex
+                )
+            )
+
+        $insertByteOffset =
+            $preambleLength + $prefixByteCount
+
+        $insertBytes =
+            $encoding.GetBytes($insertText)
+
+        $newBytes =
+            New-Object byte[] (
+                $bytes.Length + $insertBytes.Length
+            )
+
+        if ($insertByteOffset -gt 0) {
+            [System.Buffer]::BlockCopy(
+                $bytes,
+                0,
+                $newBytes,
+                0,
+                $insertByteOffset
+            )
+        }
+
+        [System.Buffer]::BlockCopy(
+            $insertBytes,
+            0,
+            $newBytes,
+            $insertByteOffset,
+            $insertBytes.Length
+        )
+
+        $suffixLength =
+            $bytes.Length - $insertByteOffset
+
+        if ($suffixLength -gt 0) {
+            [System.Buffer]::BlockCopy(
+                $bytes,
+                $insertByteOffset,
+                $newBytes,
+                $insertByteOffset + $insertBytes.Length,
+                $suffixLength
+            )
+        }
+
+        [System.IO.File]::WriteAllBytes(
+            $Path,
+            $newBytes
+        )
+
+        $IgnoredGameIds[[string]$id] = $true
+
+        Write-Host (
+            "Zu tiptoi_mybooks.yml:ignore hinzugefuegt: id {0} # {1}" -f
+            $id,
+            $commentTitle
+        )
+
+        return $true
+    }
+    catch {
+        Write-Warning (
+            "GME Product-ID {0} konnte nicht in tiptoi_mybooks.yml " +
+            "eingetragen werden: {1}" -f
+            $id,
+            $_.Exception.Message
+        )
+
+        return $false
+    }
+}
+
+
+# ============================================================================
 # ISBN-10 -> ISBN-13
 # ============================================================================
 
@@ -1979,7 +2336,7 @@ function Get-RemoteFileSizeBytes {
         $request = [System.Net.HttpWebRequest]::Create($Url)
         $request.Method = "HEAD"
         $request.AllowAutoRedirect = $true
-        $request.UserAgent = "PowerShell-TiptoiLibrarySync/20.0"
+        $request.UserAgent = "PowerShell-TiptoiLibrarySync/21.0"
         $request.Timeout = 30000
         $request.ReadWriteTimeout = 30000
 
@@ -2006,7 +2363,7 @@ function Get-RemoteFileSizeBytes {
         $request = [System.Net.HttpWebRequest]::Create($Url)
         $request.Method = "GET"
         $request.AllowAutoRedirect = $true
-        $request.UserAgent = "PowerShell-TiptoiLibrarySync/20.0"
+        $request.UserAgent = "PowerShell-TiptoiLibrarySync/21.0"
         $request.Timeout = 30000
         $request.ReadWriteTimeout = 30000
         $request.AddRange(0, 0)
@@ -3148,7 +3505,16 @@ function Invoke-ManualCleanup {
 
         [Parameter(Mandatory = $true)]
         [ValidateSet("All", "Ignored")]
-        [string]$Mode
+        [string]$Mode,
+
+        [Parameter(Mandatory = $true)]
+        $CatalogMaps,
+
+        [Parameter(Mandatory = $true)]
+        [string]$MyBooksFile,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$IgnoredGameIds
     )
 
     if ($Mode -eq "Ignored") {
@@ -3216,14 +3582,41 @@ function Invoke-ManualCleanup {
             $candidate.FileName
         )
 
+        $catalogEntry =
+            Get-PreferredCatalogGameEntry `
+                -GameProductId ([string]$candidate.ProductId) `
+                -CatalogMaps $CatalogMaps
+
+        $displayTitle =
+            [string]$candidate.Title
+
+        if (
+            $null -ne $catalogEntry -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string]$catalogEntry.ProductName
+            )
+        ) {
+            $displayTitle =
+                [string]$catalogEntry.ProductName
+        }
+
+        $ageRecommendation =
+            Get-AgeRecommendationText `
+                -Entry $catalogEntry
+
         Write-Host (
             "Titel:            {0}" -f
-            $candidate.Title
+            $displayTitle
         )
 
         Write-Host (
             "GME Product-ID:   {0}" -f
             $candidate.ProductId
+        )
+
+        Write-Host (
+            "Altersempfehlung: {0}" -f
+            $ageRecommendation
         )
 
         Write-Host (
@@ -3242,6 +3635,13 @@ function Invoke-ManualCleanup {
                     -ErrorAction Stop
 
                 Write-Host "Datei geloescht."
+
+                $null =
+                    Add-IgnoredGameIdToYaml `
+                        -Path $MyBooksFile `
+                        -ProductId ([string]$candidate.ProductId) `
+                        -Title $displayTitle `
+                        -IgnoredGameIds $IgnoredGameIds
             }
             catch {
                 Write-Warning (
@@ -3604,7 +4004,10 @@ foreach ($record in $localRecords) {
 if ($CleanupEnabled) {
     Invoke-ManualCleanup `
         -LocalRecords $localRecords `
-        -Mode $CleanupMode
+        -Mode $CleanupMode `
+        -CatalogMaps $catalogMaps `
+        -MyBooksFile $MyBooksFile `
+        -IgnoredGameIds $ignoredGameIds
 
     # Re-read local inventory after possible deletions.
     $localRecords = @(
